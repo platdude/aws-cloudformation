@@ -1,0 +1,46 @@
+# Configures the AWSCloudFormationStackSetExecutionRole to enable use of a single account as a deployment target in AWS CloudFormation StackSets.
+# This stackset is a pre-step to executing stackset instances with self-managed permissions on individual accounts and not OUs, as with
+# service-managed permissions
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Configure the AWSCloudFormationStackSetExecutionRole to enable use of a single account as a deployment target in AWS CloudFormation StackSets.
+
+Parameters:
+  ManagementAccountId:
+    Default: '123456789012'
+    Type: String
+    Description: AWS Management Account Id (the account in which StackSets will be created).
+    MaxLength: 12
+    MinLength: 12
+
+Resources:
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AWSCloudFormationStackSetExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Join 
+                - ''
+                - - 'arn:aws:iam::'
+                  - !Ref ManagementAccountId
+                  - ':root'
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: 'CloudFormationStackSetExecutionRoleReqs'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 's3:*'
+                  - 'cloudformation:*'
+                  - 'sns:*'
+                  - 'cloudtrail:*'
+                  - 'athena:*'
+                Resource: '*'

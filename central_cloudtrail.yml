@@ -1,0 +1,161 @@
+# AWS Partner Checklist: CTL-001 - Configure CloudTrail in all AWS Accounts and in all Regions
+# This StackSet creates a trail with a S3 bucket to centralise logs in a single target account,
+# a pre-step to enable CloudTrail in all accounts
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 
+  'A CloudFormation template for creating a unified CT trail and bucket on a unifiying logging account'
+Parameters:
+  TargetTrailName:
+    Default: 'central-audit-events'
+    Description: 'Indicated the common name of the trail on each account.'
+    Type: 'String'
+
+  TargetBucketName:
+    Default: 'central-cloudtrail-logs'
+    Description: 'S3 bucket name for centralising Cloudtrail logs'
+    Type: 'String'
+
+  UnifiedCloudtrailAccountTrails:
+    Description: 'List of accounts where we create a CT trail that sends logs to the unified S3 bucket in the central logging account'
+    Type: 'CommaDelimitedList'
+
+  TransitionToGlacierAfterDays:
+    Default: 365
+    Description: 'Indicates the number of days after creation when objects are transitioned to Glacier. The value must be a positive integer.'
+    Type: 'Number'
+
+  ExpireLogsAfterDays:
+    Default: 1865
+    Description: 'Indicates the number of days after creation when objects are deleted from storage. The value must be a positive integer.'
+    Type: 'Number'
+
+Resources:
+  CentralBucketName:
+    Type: 'AWS::S3::Bucket'
+    Properties: 
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: 'True'
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      BucketName: !Ref TargetBucketName
+      LifecycleConfiguration: 
+        Rules:
+          - Id: 'GlacierRule'
+            Prefix: 'glacier'
+            Status: 'Enabled'
+            ExpirationInDays: !Ref ExpireLogsAfterDays
+            Transitions:
+              - TransitionInDays: !Ref TransitionToGlacierAfterDays
+                StorageClass: 'GLACIER'
+      ObjectLockEnabled: 'False'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: 'BucketOwnerEnforced'
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+
+  CentralBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref TargetBucketName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 's3:GetBucketAcl'
+            Effect: 'Allow'
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref TargetBucketName
+            Principal: 
+              Service: 'cloudtrail.amazonaws.com'
+          - Action:
+              - 's3:PutObject'
+            Effect: 'Allow'
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref TargetBucketName
+                - '/AWSLogs/*'
+            Principal:
+              Service: 'cloudtrail.amazonaws.com'
+            Condition:
+              StringLike:
+                's3:x-amz-acl': bucket-owner-full-control
+                'AWS:SourceArn': !Ref UnifiedCloudtrailAccountTrails
+
+  CloudTrailLogsTable:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Creates CloudTrail Logs Table
+      Name: Create Table - CloudTrail Logs
+      QueryString: !Sub 
+        |-
+          CREATE EXTERNAL TABLE IF NOT EXISTS cloudtrail_logs (
+                eventversion STRING,
+                useridentity STRUCT<
+                               type:STRING,
+                               principalid:STRING,
+                               arn:STRING,
+                               accountid:STRING,
+                               invokedby:STRING,
+                               accesskeyid:STRING,
+                               userName:STRING,
+                sessioncontext:STRUCT<
+                attributes:STRUCT<
+                               mfaauthenticated:STRING,
+                               creationdate:STRING>,
+                sessionissuer:STRUCT<  
+                               type:STRING,
+                               principalId:STRING,
+                               arn:STRING, 
+                               accountId:STRING,
+                               userName:STRING>>>,
+                eventtime STRING,
+                eventsource STRING,
+                eventname STRING,
+                awsregion STRING,
+                sourceipaddress STRING,
+                useragent STRING,
+                errorcode STRING,
+                errormessage STRING,
+                requestparameters STRING,
+                responseelements STRING,
+                additionaleventdata STRING,
+                requestid STRING,
+                eventid STRING,
+                resources ARRAY<STRUCT<
+                               ARN:STRING,
+                               accountId:STRING,
+                               type:STRING>>,
+                eventtype STRING,
+                apiversion STRING,
+                readonly STRING,
+                recipientaccountid STRING,
+                serviceeventdetails STRING,
+                sharedeventid STRING,
+                vpcendpointid STRING
+                )
+                ROW FORMAT SERDE 'com.amazon.emr.hive.serde.CloudTrailSerde'
+                STORED AS INPUTFORMAT 'com.amazon.emr.cloudtrail.CloudTrailInputFormat'
+                OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+                LOCATION 's3://${TargetBucketName}/AWSLogs/'
+
+
+  Trail:
+    DependsOn: 'CentralBucketName'
+    Type: 'AWS::CloudTrail::Trail'
+    Properties:
+      S3BucketName: !Ref TargetBucketName
+      IsLogging: true
+      TrailName: !Ref TargetTrailName
+      EnableLogFileValidation: true
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
